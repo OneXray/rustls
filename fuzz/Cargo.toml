@@ -8,6 +8,10 @@ edition = "2021"
 [package.metadata]
 cargo-fuzz = true
 
+[features]
+default = []
+reality = ["rustls/reality"]
+
 [dependencies]
 env_logger = "0.11"
 libfuzzer-sys = "0.4"
@@ -49,3 +53,8 @@ path = "fuzzers/server_name.rs"
 [[bin]]
 name = "unbuffered"
 path = "fuzzers/unbuffered.rs"
+
+[[bin]]
+name = "reality_certificate"
+path = "fuzzers/reality_certificate.rs"
+required-features = ["reality"]

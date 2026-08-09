@@ -288,6 +288,11 @@ pub struct ClientConfig {
     /// How to offer Encrypted Client Hello (ECH). The default is to not offer ECH.
     pub(super) ech_mode: Option<EchMode>,
 
+    /// Immutable REALITY parameters. Per-handshake authentication material is
+    /// stored only in `ClientConnectionData`.
+    #[cfg(feature = "reality")]
+    pub(super) reality_config: Option<Arc<super::reality::RealityClientConfig>>,
+
     /// Request a specific number of TLS 1.3 session tickets via [RFC 9149].
     ///
     /// Set to `None` to disable sending the extension (the default).
@@ -395,6 +400,11 @@ impl ClientConfig {
     /// configuration that NIST recommends, as well as ECH HPKE suites if applicable.
     pub fn fips(&self) -> bool {
         let mut is_fips = self.provider.fips();
+
+        #[cfg(feature = "reality")]
+        if self.reality_config.is_some() {
+            is_fips = false;
+        }
 
         #[cfg(feature = "tls12")]
         {
@@ -813,6 +823,11 @@ mod connection {
             self.inner.core.common_state.fips
         }
 
+        #[cfg(all(test, feature = "reality"))]
+        pub(crate) fn has_reality_handshake_state(&self) -> bool {
+            self.inner.core.data.reality.is_some()
+        }
+
         fn write_early_data(&mut self, data: &[u8]) -> io::Result<usize> {
             self.inner
                 .core
@@ -885,7 +900,14 @@ impl ConnectionCore<ClientConnectionData> {
 
         let input = ClientHelloInput::new(name, &extra_exts, &mut cx, config)?;
         let state = input.start_handshake(extra_exts, &mut cx)?;
-        Ok(Self::new(state, data, common_state))
+        let core = Self::new(state, data, common_state);
+        #[cfg(feature = "reality")]
+        let core = {
+            let mut core = core;
+            core.set_failure_cleanup(|data| data.reality = None);
+            core
+        };
+        Ok(core)
     }
 
     #[cfg(feature = "std")]
@@ -1070,6 +1092,8 @@ impl std::error::Error for EarlyDataError {}
 pub struct ClientConnectionData {
     pub(super) early_data: EarlyData,
     pub(super) ech_status: EchStatus,
+    #[cfg(feature = "reality")]
+    pub(super) reality: Option<super::reality::RealityHandshakeState>,
 }
 
 impl ClientConnectionData {
@@ -1077,6 +1101,8 @@ impl ClientConnectionData {
         Self {
             early_data: EarlyData::new(),
             ech_status: EchStatus::NotOffered,
+            #[cfg(feature = "reality")]
+            reality: None,
         }
     }
 }

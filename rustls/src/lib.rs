@@ -503,6 +503,12 @@ pub mod internal {
 
     pub mod fuzzing {
         pub use crate::msgs::deframer::fuzz_deframer;
+
+        /// Exercise the strict REALITY certificate parser.
+        #[cfg(feature = "reality")]
+        pub fn fuzz_reality_certificate(certificate_der: &[u8]) -> bool {
+            crate::client::reality::fuzz_reality_certificate(certificate_der)
+        }
     }
 }
 
@@ -586,6 +592,8 @@ pub mod client {
     mod ech;
     pub(super) mod handy;
     mod hs;
+    #[cfg(feature = "reality")]
+    pub(crate) mod reality;
     #[cfg(test)]
     mod test;
     #[cfg(feature = "tls12")]
@@ -603,6 +611,8 @@ pub mod client {
     pub use handy::AlwaysResolvesClientRawPublicKeys;
     #[cfg(any(feature = "std", feature = "hashbrown"))]
     pub use handy::ClientSessionMemoryCache;
+    #[cfg(feature = "reality")]
+    pub use reality::{RealityClientConfig, RealityConfigError};
 
     /// Dangerous configuration that should be audited and used with extreme care.
     pub mod danger {

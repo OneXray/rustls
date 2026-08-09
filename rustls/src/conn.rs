@@ -866,6 +866,12 @@ pub(crate) struct ConnectionCore<Data> {
     /// We limit consecutive empty fragments to avoid a route for the peer to send
     /// us significant but fruitless traffic.
     seen_consecutive_empty_fragments: u8,
+
+    /// Side-specific fatal-error cleanup without changing the public generic
+    /// `ConnectionCommon<Data>` API. Clients replace this no-op with a
+    /// connection-local REALITY cleanup hook.
+    #[cfg(feature = "reality")]
+    failure_cleanup: fn(&mut Data),
 }
 
 impl<Data> ConnectionCore<Data> {
@@ -876,7 +882,14 @@ impl<Data> ConnectionCore<Data> {
             common_state,
             hs_deframer: HandshakeDeframer::default(),
             seen_consecutive_empty_fragments: 0,
+            #[cfg(feature = "reality")]
+            failure_cleanup: |_| {},
         }
+    }
+
+    #[cfg(feature = "reality")]
+    pub(crate) fn set_failure_cleanup(&mut self, cleanup: fn(&mut Data)) {
+        self.failure_cleanup = cleanup;
     }
 
     pub(crate) fn process_new_packets(
@@ -887,8 +900,7 @@ impl<Data> ConnectionCore<Data> {
         let mut state = match mem::replace(&mut self.state, Err(Error::HandshakeNotComplete)) {
             Ok(state) => state,
             Err(e) => {
-                self.state = Err(e.clone());
-                return Err(e);
+                return Err(self.fail(e));
             }
         };
 
@@ -904,9 +916,8 @@ impl<Data> ConnectionCore<Data> {
             let opt_msg = match res {
                 Ok(opt_msg) => opt_msg,
                 Err(e) => {
-                    self.state = Err(e.clone());
                     deframer_buffer.discard(buffer_progress.take_discard());
-                    return Err(e);
+                    return Err(self.fail(e));
                 }
             };
 
@@ -917,9 +928,8 @@ impl<Data> ConnectionCore<Data> {
             match self.process_msg(msg, state, Some(sendable_plaintext)) {
                 Ok(new) => state = new,
                 Err(e) => {
-                    self.state = Err(e.clone());
                     deframer_buffer.discard(buffer_progress.take_discard());
-                    return Err(e);
+                    return Err(self.fail(e));
                 }
             }
 
@@ -1268,6 +1278,17 @@ impl<Data> ConnectionCore<Data> {
             Ok(st) => st.send_key_update_request(&mut self.common_state),
             Err(e) => Err(e.clone()),
         }
+    }
+}
+
+impl<Data> ConnectionCore<Data> {
+    /// Persist a fatal connection error and promptly release any side-specific
+    /// handshake authentication material. The stored error remains sticky.
+    pub(super) fn fail(&mut self, error: Error) -> Error {
+        #[cfg(feature = "reality")]
+        (self.failure_cleanup)(&mut self.data);
+        self.state = Err(error.clone());
+        error
     }
 }
 

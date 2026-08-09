@@ -1165,37 +1165,46 @@ impl State<ClientConnectionData> for ExpectCertificateVerify<'_> {
             .split_first()
             .ok_or(Error::NoCertificatesPresented)?;
 
-        let now = self.config.current_time()?;
-
-        let cert_verified = self
-            .config
-            .verifier
-            .verify_server_cert(
-                end_entity,
-                intermediates,
-                &self.server_name,
-                &self.server_cert.ocsp_response,
-                now,
-            )
-            .map_err(|err| {
-                cx.common
-                    .send_cert_verify_error_alert(err)
-            })?;
-
-        // 2. Verify their signature on the handshake.
         let handshake_hash = self.transcript.current_hash();
-        let sig_verified = self
-            .config
-            .verifier
-            .verify_tls13_signature(
-                construct_server_verify_message(&handshake_hash).as_ref(),
-                end_entity,
-                cert_verify,
-            )
-            .map_err(|err| {
-                cx.common
-                    .send_cert_verify_error_alert(err)
-            })?;
+        let verify_message = construct_server_verify_message(&handshake_hash);
+
+        let verify_normally = || {
+            let now = self.config.current_time()?;
+            let cert_verified = self
+                .config
+                .verifier
+                .verify_server_cert(
+                    end_entity,
+                    intermediates,
+                    &self.server_name,
+                    &self.server_cert.ocsp_response,
+                    now,
+                )?;
+            let sig_verified = self
+                .config
+                .verifier
+                .verify_tls13_signature(verify_message.as_ref(), end_entity, cert_verify)?;
+            Ok::<_, Error>((cert_verified, sig_verified))
+        };
+
+        #[cfg(feature = "reality")]
+        let verification = match cx.data.reality.take() {
+            Some(mut reality) => (|| {
+                let cert_verified = reality.verify_server_certificate(end_entity, intermediates)?;
+                let sig_verified =
+                    reality.verify_tls13_signature(verify_message.as_ref(), cert_verify)?;
+                Ok::<_, Error>((cert_verified, sig_verified))
+            })(),
+            None => verify_normally(),
+        };
+
+        #[cfg(not(feature = "reality"))]
+        let verification = verify_normally();
+
+        let (cert_verified, sig_verified) = verification.map_err(|err| {
+            cx.common
+                .send_cert_verify_error_alert(err)
+        })?;
 
         cx.common.peer_certificates = Some(self.server_cert.cert_chain.into_owned());
         self.transcript.add_message(&m);
@@ -1479,6 +1488,11 @@ impl ExpectTraffic {
         cx: &mut KernelContext<'_>,
         nst: &NewSessionTicketPayloadTls13,
     ) -> Result<(), Error> {
+        #[cfg(feature = "reality")]
+        if self.config.reality_config.is_some() {
+            return Ok(());
+        }
+
         let secret = self
             .resumption
             .derive_ticket_psk(&nst.nonce.0);

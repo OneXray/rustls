@@ -4,6 +4,8 @@ use alloc::boxed::Box;
 use core::fmt;
 
 use super::ring_like::agreement;
+#[cfg(feature = "reality")]
+use super::ring_like::rand::SecureRandom as _;
 use super::ring_like::rand::SystemRandom;
 use crate::crypto::{ActiveKeyExchange, FfdheGroup, SharedSecret, SupportedKxGroup};
 use crate::error::{Error, PeerMisbehaved};
@@ -58,6 +60,47 @@ impl SupportedKxGroup for KxGroup {
         }))
     }
 
+    #[cfg(feature = "reality")]
+    fn supports_reality(&self) -> bool {
+        self.name == NamedGroup::X25519
+    }
+
+    #[cfg(feature = "reality")]
+    fn start_reality(
+        &self,
+        server_public_key: &[u8; 32],
+    ) -> Result<(Box<dyn ActiveKeyExchange>, SharedSecret), Error> {
+        use zeroize::Zeroize;
+
+        if self.name != NamedGroup::X25519 {
+            return Err(Error::General(
+                "REALITY requires the X25519 key exchange group".into(),
+            ));
+        }
+
+        let rng = SystemRandom::new();
+        let mut private_key_bytes = [0u8; 32];
+        rng.fill(&mut private_key_bytes)
+            .map_err(|_| GetRandomFailed)?;
+        let private_key = x25519_dalek::StaticSecret::from(private_key_bytes);
+        private_key_bytes.zeroize();
+
+        let public_key = x25519_dalek::PublicKey::from(&private_key).to_bytes();
+        let server_public_key = x25519_dalek::PublicKey::from(*server_public_key);
+        let auth_secret = private_key.diffie_hellman(&server_public_key);
+        if !auth_secret.was_contributory() {
+            return Err(PeerMisbehaved::InvalidKeyShare.into());
+        }
+
+        Ok((
+            Box::new(RealityKeyExchange {
+                private_key,
+                public_key,
+            }),
+            SharedSecret::from(auth_secret.as_bytes().as_slice()),
+        ))
+    }
+
     fn ffdhe_group(&self) -> Option<FfdheGroup<'static>> {
         None
     }
@@ -68,6 +111,39 @@ impl SupportedKxGroup for KxGroup {
 
     fn fips(&self) -> bool {
         self.fips_allowed && super::fips()
+    }
+}
+
+#[cfg(feature = "reality")]
+struct RealityKeyExchange {
+    private_key: x25519_dalek::StaticSecret,
+    public_key: [u8; 32],
+}
+
+#[cfg(feature = "reality")]
+impl ActiveKeyExchange for RealityKeyExchange {
+    fn complete(self: Box<Self>, peer: &[u8]) -> Result<SharedSecret, Error> {
+        let peer: [u8; 32] = peer
+            .try_into()
+            .map_err(|_| PeerMisbehaved::InvalidKeyShare)?;
+        let peer = x25519_dalek::PublicKey::from(peer);
+        let shared_secret = self.private_key.diffie_hellman(&peer);
+        if !shared_secret.was_contributory() {
+            return Err(PeerMisbehaved::InvalidKeyShare.into());
+        }
+        Ok(SharedSecret::from(shared_secret.as_bytes().as_slice()))
+    }
+
+    fn ffdhe_group(&self) -> Option<FfdheGroup<'static>> {
+        None
+    }
+
+    fn group(&self) -> NamedGroup {
+        NamedGroup::X25519
+    }
+
+    fn pub_key(&self) -> &[u8] {
+        &self.public_key
     }
 }
 

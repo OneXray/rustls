@@ -5,13 +5,19 @@ use pki_types::{CertificateDer, PrivateKeyDer};
 
 use super::client_conn::Resumption;
 use crate::builder::{ConfigBuilder, WantsVerifier};
+#[cfg(feature = "reality")]
+use crate::client::reality::{RealityClientConfig, config_verifier};
 use crate::client::{ClientConfig, EchMode, ResolvesClientCert, handy};
+#[cfg(feature = "reality")]
+use crate::enums::ProtocolVersion;
 use crate::error::Error;
 use crate::key_log::NoKeyLog;
 use crate::sign::{CertifiedKey, SingleCertAndKey};
 use crate::sync::Arc;
 use crate::versions::TLS13;
 use crate::webpki::{self, WebPkiServerVerifier};
+#[cfg(feature = "reality")]
+use crate::{NamedGroup, SignatureScheme};
 use crate::{WantsVersions, compress, verify, versions};
 
 impl ConfigBuilder<ClientConfig, WantsVersions> {
@@ -73,11 +79,78 @@ impl ConfigBuilder<ClientConfig, WantsVerifier> {
                 versions: self.state.versions,
                 verifier,
                 client_ech_mode: self.state.client_ech_mode,
+                #[cfg(feature = "reality")]
+                reality_config: None,
             },
             provider: self.provider,
             time_provider: self.time_provider,
             side: PhantomData,
         }
+    }
+
+    /// Use Xray-compatible REALITY authentication for this client.
+    ///
+    /// REALITY is a complete, fail-closed server authentication policy and
+    /// therefore replaces the normal WebPKI verifier. It requires a TLS 1.3
+    /// only builder with X25519 available and cannot be combined with ECH.
+    #[cfg(feature = "reality")]
+    pub fn with_reality(
+        self,
+        reality_config: RealityClientConfig,
+    ) -> Result<ConfigBuilder<ClientConfig, WantsClientCert>, Error> {
+        if !self
+            .state
+            .versions
+            .contains(ProtocolVersion::TLSv1_3)
+            || self
+                .state
+                .versions
+                .contains(ProtocolVersion::TLSv1_2)
+        {
+            return Err(Error::General(
+                "REALITY requires TLS 1.3 as the only protocol version".into(),
+            ));
+        }
+        if self.state.client_ech_mode.is_some() {
+            return Err(Error::General(
+                "REALITY cannot be combined with encrypted client hello".into(),
+            ));
+        }
+        let reality_group = self
+            .provider
+            .kx_groups
+            .iter()
+            .copied()
+            .find(|group| {
+                group.usable_for_version(ProtocolVersion::TLSv1_3)
+                    && group.name() == NamedGroup::X25519
+            });
+        if !matches!(reality_group, Some(group) if group.supports_reality()) {
+            return Err(Error::General(
+                "crypto provider does not support REALITY X25519 key reuse".into(),
+            ));
+        }
+        let signature_schemes = self
+            .provider
+            .signature_verification_algorithms
+            .supported_schemes();
+        if !signature_schemes.contains(&SignatureScheme::ED25519) {
+            return Err(Error::General(
+                "crypto provider does not support REALITY Ed25519 verification".into(),
+            ));
+        }
+
+        Ok(ConfigBuilder {
+            state: WantsClientCert {
+                versions: self.state.versions,
+                verifier: config_verifier(signature_schemes),
+                client_ech_mode: None,
+                reality_config: Some(Arc::new(reality_config)),
+            },
+            provider: self.provider,
+            time_provider: self.time_provider,
+            side: PhantomData,
+        })
     }
 
     /// Access configuration options whose use is dangerous and requires
@@ -113,6 +186,8 @@ pub(super) mod danger {
                     versions: self.cfg.state.versions,
                     verifier,
                     client_ech_mode: self.cfg.state.client_ech_mode,
+                    #[cfg(feature = "reality")]
+                    reality_config: None,
                 },
                 provider: self.cfg.provider,
                 time_provider: self.cfg.time_provider,
@@ -131,6 +206,8 @@ pub struct WantsClientCert {
     versions: versions::EnabledVersions,
     verifier: Arc<dyn verify::ServerCertVerifier>,
     client_ech_mode: Option<EchMode>,
+    #[cfg(feature = "reality")]
+    reality_config: Option<Arc<RealityClientConfig>>,
 }
 
 impl ConfigBuilder<ClientConfig, WantsClientCert> {
@@ -165,11 +242,20 @@ impl ConfigBuilder<ClientConfig, WantsClientCert> {
         #[cfg(feature = "tls12")]
         let require_ems = self.provider.fips();
 
+        #[cfg(feature = "reality")]
+        let resumption = if self.state.reality_config.is_some() {
+            Resumption::disabled()
+        } else {
+            Resumption::default()
+        };
+        #[cfg(not(feature = "reality"))]
+        let resumption = Resumption::default();
+
         ClientConfig {
             provider: self.provider,
             alpn_protocols: Vec::new(),
             check_selected_alpn: true,
-            resumption: Resumption::default(),
+            resumption,
             max_fragment_size: None,
             client_auth_cert_resolver,
             versions: self.state.versions,
@@ -185,6 +271,8 @@ impl ConfigBuilder<ClientConfig, WantsClientCert> {
             cert_compression_cache: Arc::new(compress::CompressionCache::default()),
             cert_decompressors: compress::default_cert_decompressors().to_vec(),
             ech_mode: self.state.client_ech_mode,
+            #[cfg(feature = "reality")]
+            reality_config: self.state.reality_config,
             send_ticket_request: None,
         }
     }

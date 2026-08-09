@@ -27,6 +27,8 @@ use crate::error::{Error, PeerIncompatible, PeerMisbehaved};
 use crate::hash_hs::HandshakeHashBuffer;
 use crate::log::{debug, trace};
 use crate::msgs::base::Payload;
+#[cfg(feature = "reality")]
+use crate::msgs::codec::Codec;
 use crate::msgs::enums::{Compression, ExtensionType};
 use crate::msgs::handshake::{
     CertificateStatusRequest, ClientExtensions, ClientExtensionsInput, ClientHelloPayload,
@@ -84,6 +86,25 @@ impl ClientHelloInput {
         cx: &mut ClientContext<'_>,
         config: Arc<ClientConfig>,
     ) -> Result<Self, Error> {
+        #[cfg(feature = "reality")]
+        if config.reality_config.is_some() {
+            if cx.common.is_quic() {
+                return Err(Error::General("REALITY is not supported with QUIC".into()));
+            }
+            if config.enable_early_data {
+                return Err(Error::General(
+                    "REALITY does not support TLS early data".into(),
+                ));
+            }
+        }
+
+        #[cfg(feature = "reality")]
+        let mut resuming = if config.reality_config.is_some() {
+            None
+        } else {
+            ClientSessionValue::retrieve(&server_name, &config, cx)
+        };
+        #[cfg(not(feature = "reality"))]
         let mut resuming = ClientSessionValue::retrieve(&server_name, &config, cx);
         let session_id = match &mut resuming {
             Some(_resuming) => {
@@ -112,6 +133,8 @@ impl ClientHelloInput {
         // https://tools.ietf.org/html/draft-ietf-quic-tls-34#section-8.4
         let session_id = match session_id {
             Some(session_id) => session_id,
+            #[cfg(feature = "reality")]
+            None if config.reality_config.is_some() => SessionId::from_array([0u8; 32]),
             None if cx.common.is_quic() => SessionId::empty(),
             None if !config.supports_version(ProtocolVersion::TLSv1_3) => SessionId::empty(),
             None => SessionId::random(config.provider.secure_random)?,
@@ -151,6 +174,30 @@ impl ClientHelloInput {
             transcript_buffer.set_client_auth_enabled();
         }
 
+        #[cfg(feature = "reality")]
+        let key_share = if let Some(reality_config) = self.config.reality_config.as_ref() {
+            let group = self
+                .config
+                .find_kx_group(crate::NamedGroup::X25519, ProtocolVersion::TLSv1_3)
+                .ok_or_else(|| Error::General("REALITY requires X25519".into()))?;
+            let (key_share, auth_secret) =
+                group.start_reality(reality_config.server_public_key())?;
+            cx.common.kx_state = KxState::Start(group);
+            cx.data.reality = Some(super::reality::RealityHandshakeState::new(
+                Arc::clone(reality_config),
+                auth_secret,
+            ));
+            Some(key_share)
+        } else if self.config.needs_key_share() {
+            Some(tls13::initial_key_share(
+                &self.config,
+                &self.server_name,
+                &mut cx.common.kx_state,
+            )?)
+        } else {
+            None
+        };
+        #[cfg(not(feature = "reality"))]
         let key_share = if self.config.needs_key_share() {
             Some(tls13::initial_key_share(
                 &self.config,
@@ -432,6 +479,37 @@ fn emit_client_hello_for_retry(
     input.hello.sent_extensions = chp_payload.collect_used();
 
     let mut chp = HandshakeMessagePayload(HandshakePayload::ClientHello(chp_payload));
+
+    #[cfg(feature = "reality")]
+    if cx.data.reality.is_some() {
+        if retryreq.is_some() || tls13_session.is_some() || ech_state.is_some() {
+            return Err(Error::General(
+                "REALITY does not support retry, resumption, or ECH".into(),
+            ));
+        }
+
+        let zero_session_id = SessionId::from_array([0u8; 32]);
+        let HandshakePayload::ClientHello(client_hello) = &mut chp.0 else {
+            unreachable!()
+        };
+        client_hello.session_id = zero_session_id;
+        input.session_id = zero_session_id;
+
+        let aad = chp.get_encoding();
+        let timestamp = config.current_time()?.as_secs() as u32;
+        let session_id = cx
+            .data
+            .reality
+            .as_mut()
+            .ok_or_else(|| Error::General("missing REALITY connection state".into()))?
+            .seal_session_id(&aad, &input.random.0, timestamp)?;
+        let session_id = SessionId::from_array(session_id);
+        let HandshakePayload::ClientHello(client_hello) = &mut chp.0 else {
+            unreachable!()
+        };
+        client_hello.session_id = session_id;
+        input.session_id = session_id;
+    }
 
     let tls13_early_data_key_schedule = match (ech_state.as_mut(), tls13_session) {
         // If we're performing ECH and resuming, then the PSK binder will have been dealt with
@@ -851,6 +929,14 @@ impl ExpectServerHelloOrHelloRetryRequest {
         cx: &mut ClientContext<'_>,
         m: Message<'_>,
     ) -> NextStateOrError<'static> {
+        #[cfg(feature = "reality")]
+        if cx.data.reality.is_some() {
+            return Err(cx.common.send_fatal_alert(
+                AlertDescription::UnexpectedMessage,
+                PeerMisbehaved::RefusedToFollowHelloRetryRequest,
+            ));
+        }
+
         let hrr = require_handshake_msg!(
             m,
             HandshakeType::HelloRetryRequest,

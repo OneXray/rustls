@@ -26,6 +26,7 @@ logging = ["log"]
 prefer-post-quantum = ["aws_lc_rs"]
 read_buf = ["rustversion", "std"]
 ring = ["dep:ring", "webpki/ring"]
+reality = ["ring", "dep:x25519-dalek"]
 std = ["webpki/std", "pki-types/std", "once_cell/std"]
 tls12 = []
 zlib = ["dep:zlib-rs"]
@@ -46,6 +47,7 @@ subtle = { workspace = true }
 webpki = { workspace = true }
 pki-types = { workspace = true }
 zeroize = { workspace = true }
+x25519-dalek = { workspace = true, optional = true }
 zlib-rs = { workspace = true, optional = true }
 
 [dev-dependencies]

@@ -376,6 +376,32 @@ pub trait SupportedKxGroup: Send + Sync + Debug {
     /// This can fail if the random source fails during ephemeral key generation.
     fn start(&self) -> Result<Box<dyn ActiveKeyExchange>, Error>;
 
+    /// Return `true` when this group can reuse one X25519 private key for the
+    /// TLS key share and REALITY authentication ECDH.
+    ///
+    /// The default is deliberately fail closed so a provider which merely
+    /// names an X25519 group cannot pass REALITY configuration validation.
+    #[cfg(feature = "reality")]
+    fn supports_reality(&self) -> bool {
+        false
+    }
+
+    /// Start the X25519 key exchange used by a REALITY client and derive its
+    /// per-connection authentication secret from the same ephemeral key.
+    ///
+    /// Providers which do not explicitly support this operation fail closed.
+    /// The returned active exchange remains responsible for completing the
+    /// ordinary TLS key exchange with the server's ephemeral key share.
+    #[cfg(feature = "reality")]
+    fn start_reality(
+        &self,
+        _server_public_key: &[u8; 32],
+    ) -> Result<(Box<dyn ActiveKeyExchange>, SharedSecret), Error> {
+        Err(Error::General(
+            "crypto provider does not support REALITY X25519 key exchange".into(),
+        ))
+    }
+
     /// Start and complete a key exchange, in one operation.
     ///
     /// The default implementation for this calls `start()` and then calls

@@ -93,6 +93,7 @@ impl<Data> UnbufferedConnectionCommon<Data> {
                 {
                     Err(err) => {
                         buffer.queue_discard(buffer_progress.take_discard());
+                        let err = self.core.fail(err);
                         return UnbufferedStatus {
                             discard: buffer.pending_discard(),
                             state: Err(err),
@@ -108,7 +109,7 @@ impl<Data> UnbufferedConnectionCommon<Data> {
                         Ok(state) => state,
                         Err(e) => {
                             buffer.queue_discard(buffer_progress.take_discard());
-                            self.core.state = Err(e.clone());
+                            let e = self.core.fail(e);
                             return UnbufferedStatus {
                                 discard: buffer.pending_discard(),
                                 state: Err(e),
@@ -121,7 +122,7 @@ impl<Data> UnbufferedConnectionCommon<Data> {
 
                     Err(e) => {
                         buffer.queue_discard(buffer_progress.take_discard());
-                        self.core.state = Err(e.clone());
+                        let e = self.core.fail(e);
                         return UnbufferedStatus {
                             discard: buffer.pending_discard(),
                             state: Err(e),

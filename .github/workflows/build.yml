@@ -258,8 +258,13 @@ jobs:
         run: |
           cargo fuzz build
           for target in $(cargo fuzz list) ; do
+            if [ "$target" = reality_certificate ] ; then
+              continue
+            fi
             cargo fuzz run $target -- -max_total_time=10
           done
+          cargo fuzz build reality_certificate --features reality
+          cargo fuzz run reality_certificate --features reality -- -max_total_time=10
 
   benchmarks:
     name: Run benchmarks

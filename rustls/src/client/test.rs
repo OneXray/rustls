@@ -627,6 +627,186 @@ mod tests {
     }
 }
 
+#[cfg(feature = "reality")]
+#[test]
+fn reality_client_rejects_hrr_even_with_matching_session_id() {
+    let mut server_public_key = [0u8; 32];
+    server_public_key[0] = 9;
+    let reality =
+        crate::client::RealityClientConfig::new(server_public_key, &[1, 2, 3, 4], [1, 8, 0])
+            .unwrap();
+    let config =
+        ClientConfig::builder_with_provider(crate::crypto::ring::default_provider().into())
+            .with_protocol_versions(&[&crate::version::TLS13])
+            .unwrap()
+            .with_reality(reality)
+            .unwrap()
+            .with_no_client_auth();
+    let mut conn =
+        ClientConnection::new(config.into(), ServerName::try_from("localhost").unwrap()).unwrap();
+    assert!(conn.has_reality_handshake_state());
+
+    let mut sent = Vec::new();
+    conn.write_tls(&mut sent).unwrap();
+    let client_hello = OutboundOpaqueMessage::read(&mut Reader::init(&sent))
+        .unwrap()
+        .into_plain_message();
+    let session_id = match Message::try_from(client_hello).unwrap() {
+        Message {
+            payload:
+                MessagePayload::Handshake {
+                    parsed: HandshakeMessagePayload(HandshakePayload::ClientHello(ch)),
+                    ..
+                },
+            ..
+        } => ch.session_id,
+        other => panic!("unexpected message {other:?}"),
+    };
+    assert_eq!(session_id.as_ref().len(), 32);
+
+    // Echo the REALITY ClientHello's encrypted session ID and otherwise send a
+    // valid cookie-only TLS 1.3 HRR. REALITY must still reject retries because
+    // its authenticated session ID is bound to the original ClientHello.
+    let hrr = Message {
+        version: ProtocolVersion::TLSv1_3,
+        payload: MessagePayload::handshake(HandshakeMessagePayload(
+            HandshakePayload::HelloRetryRequest(HelloRetryRequest {
+                cipher_suite: CipherSuite::TLS13_AES_128_GCM_SHA256,
+                legacy_version: ProtocolVersion::TLSv1_2,
+                session_id,
+                extensions: crate::msgs::handshake::HelloRetryRequestExtensions {
+                    cookie: Some(PayloadU16::new(vec![1, 2, 3, 4])),
+                    supported_versions: Some(ProtocolVersion::TLSv1_3),
+                    ..crate::msgs::handshake::HelloRetryRequestExtensions::default()
+                },
+            }),
+        )),
+    };
+
+    conn.read_tls(&mut hrr.into_wire_bytes().as_slice())
+        .unwrap();
+    assert_eq!(
+        conn.process_new_packets().unwrap_err(),
+        PeerMisbehaved::RefusedToFollowHelloRetryRequest.into()
+    );
+    assert!(!conn.has_reality_handshake_state());
+}
+
+#[cfg(feature = "reality")]
+#[test]
+fn reality_client_hello_offers_all_provider_signature_schemes() {
+    let provider = Arc::new(crate::crypto::ring::default_provider());
+    let expected = provider
+        .signature_verification_algorithms
+        .supported_schemes();
+    assert!(expected.contains(&SignatureScheme::ED25519));
+    assert!(expected.contains(&SignatureScheme::ECDSA_NISTP256_SHA256));
+
+    let mut server_public_key = [0u8; 32];
+    server_public_key[0] = 9;
+    let reality =
+        crate::client::RealityClientConfig::new(server_public_key, &[], [26, 7, 11]).unwrap();
+    let config = ClientConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&crate::version::TLS13])
+        .unwrap()
+        .with_reality(reality)
+        .unwrap()
+        .with_no_client_auth();
+
+    let client_hello = client_hello_sent_for_config(config).unwrap();
+    assert_eq!(
+        client_hello
+            .extensions
+            .signature_schemes
+            .as_deref(),
+        Some(expected.as_slice())
+    );
+}
+
+#[cfg(all(feature = "reality", feature = "std"))]
+#[test]
+fn reality_shared_configs_create_one_hundred_independent_client_hellos() {
+    use std::collections::HashSet;
+    use std::sync::Barrier;
+    use std::thread;
+
+    fn config(server_public_key: [u8; 32], short_id: &[u8]) -> Arc<ClientConfig> {
+        let reality =
+            crate::client::RealityClientConfig::new(server_public_key, short_id, [26, 7, 11])
+                .unwrap();
+        ClientConfig::builder_with_provider(crate::crypto::ring::default_provider().into())
+            .with_protocol_versions(&[&crate::version::TLS13])
+            .unwrap()
+            .with_reality(reality)
+            .unwrap()
+            .with_no_client_auth()
+            .into()
+    }
+
+    let first_key = {
+        let mut key = [0u8; 32];
+        key[0] = 9;
+        key
+    };
+    let second_key =
+        hex::decode("e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c")
+            .unwrap()
+            .try_into()
+            .unwrap();
+    let configs = [
+        config(first_key, &[0x01, 0x23, 0x45, 0x67]),
+        config(second_key, &[0x89, 0xab, 0xcd, 0xef]),
+    ];
+
+    const CONNECTIONS: usize = 100;
+    let barrier = Arc::new(Barrier::new(CONNECTIONS));
+    let handles = (0..CONNECTIONS)
+        .map(|index| {
+            let config = Arc::clone(&configs[index % configs.len()]);
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                barrier.wait();
+                let mut conn =
+                    ClientConnection::new(config, ServerName::try_from("localhost").unwrap())
+                        .unwrap();
+                let mut sent = Vec::new();
+                conn.write_tls(&mut sent).unwrap();
+                let client_hello = OutboundOpaqueMessage::read(&mut Reader::init(&sent))
+                    .unwrap()
+                    .into_plain_message();
+                match Message::try_from(client_hello).unwrap() {
+                    Message {
+                        payload:
+                            MessagePayload::Handshake {
+                                parsed: HandshakeMessagePayload(HandshakePayload::ClientHello(ch)),
+                                ..
+                            },
+                        ..
+                    } => ch.session_id.as_ref().to_vec(),
+                    other => panic!("unexpected message {other:?}"),
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let session_ids = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect::<Vec<_>>();
+    assert!(
+        session_ids
+            .iter()
+            .all(|session_id| session_id.len() == 32)
+    );
+    assert_eq!(
+        session_ids
+            .iter()
+            .collect::<HashSet<_>>()
+            .len(),
+        CONNECTIONS
+    );
+}
+
 // invalid with fips, as we can't offer X25519 separately
 #[cfg(all(
     feature = "aws-lc-rs",

@@ -12,7 +12,13 @@ deframer
 fragment
 message
 persist
-servert
+reality_certificate
+server
+server_name
+unbuffered
+
+# The REALITY parser target is opt-in so its rustls feature stays off by default.
+$ cargo fuzz run reality_certificate --features reality -- -max_total_time=120
 
 # Run the message fuzz target for a fixed period of time (expressed in seconds).
 $ cargo fuzz run message -- -max_total_time=120
@@ -20,6 +26,10 @@ $ cargo fuzz run message -- -max_total_time=120
 # Clean up generated corpus files
 git clean --interactive -- ./corpus
 ```
+
+The REALITY target accepts raw DER. Its checked-in valid certificate seed uses
+a `hex:` prefix so the corpus remains reviewable; the target decodes that form
+before calling the parser.
 
 [cargo-fuzz]: https://rust-fuzz.github.io/book/cargo-fuzz.html
 [oss-fuzz]: https://google.github.io/oss-fuzz/
