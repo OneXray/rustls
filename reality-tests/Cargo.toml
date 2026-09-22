@@ -1,0 +1,17 @@
+[package]
+name = "reality-hybrid-probe"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.85"
+publish = false
+
+[workspace]
+
+[dependencies]
+base64 = "0.22"
+ml-kem = { version = "=0.3.2", default-features = false, features = ["alloc", "getrandom", "zeroize"] }
+rustls = { path = "../rustls", default-features = false, features = ["ring", "std", "reality"] }
+zeroize = "1.8"
+
+[dev-dependencies]
+x25519-dalek = { version = "2", features = ["static_secrets"] }

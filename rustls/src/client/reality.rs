@@ -17,7 +17,7 @@ use crate::crypto::SharedSecret;
 use crate::error::CertificateError;
 use crate::sync::Arc;
 use crate::verify::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use crate::{DigitallySignedStruct, Error, SignatureScheme};
+use crate::{DigitallySignedStruct, Error, NamedGroup, SignatureScheme};
 
 const REALITY_INFO: &[u8] = b"REALITY";
 const REALITY_AUTH_KEY_LEN: usize = 32;
@@ -34,6 +34,7 @@ pub struct RealityClientConfig {
     server_public_key: [u8; 32],
     short_id: [u8; 8],
     client_version: [u8; 3],
+    key_exchange_group: NamedGroup,
 }
 
 impl RealityClientConfig {
@@ -57,7 +58,34 @@ impl RealityClientConfig {
             server_public_key,
             short_id: fixed_short_id,
             client_version,
+            key_exchange_group: NamedGroup::X25519,
         })
+    }
+
+    /// Select the initial TLS key share used for REALITY authentication.
+    ///
+    /// The default is [`NamedGroup::X25519`]. The only other supported choice
+    /// is [`NamedGroup::X25519MLKEM768`]. The configured crypto provider must
+    /// implement [`crate::crypto::SupportedKxGroup::start_reality`] for the
+    /// selected group; naming a group does not install its implementation.
+    ///
+    /// This does not change the provider's supported groups or hybrid-component
+    /// policy. To require hybrid negotiation, omit the classical group from the
+    /// provider. To permit classical fallback, a hybrid provider may expose the
+    /// same X25519 component, and X25519 must also be in the provider's groups.
+    pub fn with_key_exchange_group(
+        mut self,
+        group: NamedGroup,
+    ) -> Result<Self, RealityConfigError> {
+        if !matches!(group, NamedGroup::X25519 | NamedGroup::X25519MLKEM768) {
+            return Err(RealityConfigError::UnsupportedKeyExchangeGroup);
+        }
+        self.key_exchange_group = group;
+        Ok(self)
+    }
+
+    pub(crate) fn key_exchange_group(&self) -> NamedGroup {
+        self.key_exchange_group
     }
 
     pub(crate) fn server_public_key(&self) -> &[u8; 32] {
@@ -78,12 +106,17 @@ impl RealityClientConfig {
 pub enum RealityConfigError {
     /// A REALITY short ID is limited to eight bytes.
     ShortIdTooLong,
+    /// REALITY requires X25519 or X25519MLKEM768 key exchange.
+    UnsupportedKeyExchangeGroup,
 }
 
 impl fmt::Display for RealityConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ShortIdTooLong => f.write_str("REALITY short ID must be at most 8 bytes"),
+            Self::UnsupportedKeyExchangeGroup => {
+                f.write_str("REALITY requires X25519 or X25519MLKEM768 key exchange")
+            }
         }
     }
 }
@@ -639,7 +672,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(Error::General(message))
-                if message == "crypto provider does not support REALITY X25519 key reuse"
+                if message == "crypto provider does not support REALITY key reuse for the selected group"
         ));
     }
 

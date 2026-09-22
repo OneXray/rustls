@@ -180,8 +180,13 @@ impl ClientHelloInput {
         let key_share = if let Some(reality_config) = self.config.reality_config.as_ref() {
             let group = self
                 .config
-                .find_kx_group(crate::NamedGroup::X25519, ProtocolVersion::TLSv1_3)
-                .ok_or_else(|| Error::General("REALITY requires X25519".into()))?;
+                .find_kx_group(
+                    reality_config.key_exchange_group(),
+                    ProtocolVersion::TLSv1_3,
+                )
+                .ok_or_else(|| {
+                    Error::General("REALITY key exchange group is unavailable".into())
+                })?;
             let (key_share, auth_secret) =
                 group.start_reality(reality_config.server_public_key())?;
             cx.common.kx_state = KxState::Start(group);

@@ -4,6 +4,8 @@ use core::marker::PhantomData;
 use pki_types::{CertificateDer, PrivateKeyDer};
 
 use super::client_conn::Resumption;
+#[cfg(feature = "reality")]
+use crate::SignatureScheme;
 use crate::builder::{ConfigBuilder, WantsVerifier};
 #[cfg(feature = "reality")]
 use crate::client::reality::{RealityClientConfig, config_verifier};
@@ -16,8 +18,6 @@ use crate::sign::{CertifiedKey, SingleCertAndKey};
 use crate::sync::Arc;
 use crate::versions::TLS13;
 use crate::webpki::{self, WebPkiServerVerifier};
-#[cfg(feature = "reality")]
-use crate::{NamedGroup, SignatureScheme};
 use crate::{WantsVersions, compress, verify, versions};
 
 impl ConfigBuilder<ClientConfig, WantsVersions> {
@@ -92,7 +92,8 @@ impl ConfigBuilder<ClientConfig, WantsVerifier> {
     ///
     /// REALITY is a complete, fail-closed server authentication policy and
     /// therefore replaces the normal WebPKI verifier. It requires a TLS 1.3
-    /// only builder with X25519 available and cannot be combined with ECH.
+    /// only builder with the selected REALITY key exchange group available and
+    /// cannot be combined with ECH. X25519 is selected by default.
     #[cfg(feature = "reality")]
     pub fn with_reality(
         self,
@@ -123,11 +124,11 @@ impl ConfigBuilder<ClientConfig, WantsVerifier> {
             .copied()
             .find(|group| {
                 group.usable_for_version(ProtocolVersion::TLSv1_3)
-                    && group.name() == NamedGroup::X25519
+                    && group.name() == reality_config.key_exchange_group()
             });
         if !matches!(reality_group, Some(group) if group.supports_reality()) {
             return Err(Error::General(
-                "crypto provider does not support REALITY X25519 key reuse".into(),
+                "crypto provider does not support REALITY key reuse for the selected group".into(),
             ));
         }
         let signature_schemes = self

@@ -377,7 +377,8 @@ pub trait SupportedKxGroup: Send + Sync + Debug {
     fn start(&self) -> Result<Box<dyn ActiveKeyExchange>, Error>;
 
     /// Return `true` when this group can reuse one X25519 private key for the
-    /// TLS key share and REALITY authentication ECDH.
+    /// TLS key share and REALITY authentication ECDH. For X25519MLKEM768 this
+    /// means the X25519 component of the hybrid exchange.
     ///
     /// The default is deliberately fail closed so a provider which merely
     /// names an X25519 group cannot pass REALITY configuration validation.
@@ -386,12 +387,15 @@ pub trait SupportedKxGroup: Send + Sync + Debug {
         false
     }
 
-    /// Start the X25519 key exchange used by a REALITY client and derive its
+    /// Start the key exchange used by a REALITY client and derive its
     /// per-connection authentication secret from the same ephemeral key.
     ///
     /// Providers which do not explicitly support this operation fail closed.
     /// The returned active exchange remains responsible for completing the
     /// ordinary TLS key exchange with the server's ephemeral key share.
+    /// For X25519MLKEM768, authentication still uses only X25519, not the hybrid
+    /// TLS shared secret. If the exchange exposes a [`ActiveKeyExchange::hybrid_component`],
+    /// that must be the same X25519 key used in the hybrid share and authentication.
     #[cfg(feature = "reality")]
     fn start_reality(
         &self,
