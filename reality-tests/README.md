@@ -2,6 +2,8 @@
 
 The later [0.23.45 upstream sync](UPSTREAM-0.23.45.md) preserves this probe and
 records new version-specific results. The 0.23.43 results below are historical.
+The [x25519-dalek 3.0.0 upgrade](X25519-3.0.0.md) records the subsequent
+REALITY dependency update and repeat validation on its dedicated branch.
 
 An independent, test-only workspace for the public REALITY key-exchange API.
 It does not add an ML-KEM dependency to the rustls library or select a VCore

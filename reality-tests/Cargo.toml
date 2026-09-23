@@ -14,4 +14,4 @@ rustls = { path = "../rustls", default-features = false, features = ["ring", "st
 zeroize = "1.8"
 
 [dev-dependencies]
-x25519-dalek = { version = "2", features = ["static_secrets"] }
+x25519-dalek = { version = "=3.0.0", default-features = false, features = ["static_secrets", "zeroize"] }

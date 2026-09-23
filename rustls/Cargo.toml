@@ -47,7 +47,8 @@ subtle = { workspace = true }
 webpki = { workspace = true }
 pki-types = { workspace = true }
 zeroize = { workspace = true }
-x25519-dalek = { workspace = true, optional = true }
+# REALITY uses the current stable API independently of upstream's example provider.
+x25519-dalek = { version = "=3.0.0", default-features = false, features = ["static_secrets", "zeroize"], optional = true }
 zlib-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
