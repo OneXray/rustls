@@ -1,5 +1,8 @@
 # REALITY hybrid acceptance probe
 
+The later [0.23.45 upstream sync](UPSTREAM-0.23.45.md) preserves this probe and
+records new version-specific results. The 0.23.43 results below are historical.
+
 An independent, test-only workspace for the public REALITY key-exchange API.
 It does not add an ML-KEM dependency to the rustls library or select a VCore
 production provider. Its only path dependency is the rustls crate in this same
